@@ -1,0 +1,79 @@
+name: 'Build and Deploy to Kubernetes'
+description: 'Builds a Docker image, pushes it to GitHub Container Registry, and deploys it to Kubernetes'
+inputs:
+  DOCKERFILE_PATH:
+    description: 'Path to the Dockerfile'
+    required: true
+  DEPLOYMENTFILE_PATH:
+    description: 'Path to the Kubernetes Deployment file'
+    required: true
+  IMAGE_NAME:
+    description: 'Docker image name'
+    required: true
+  IMAGE_TAG:
+    description: 'Docker image tag'
+    required: true
+  REPOSITORY:
+    description: 'Repository name for the Docker image'
+    required: true
+  USERNAME:
+    description: 'Username for GitHub Container Registry'
+    required: true
+  IMAGE_PULL_SECRETS:
+    description: 'Image pull secrets for Kubernetes'
+    required: true
+  K8S_NAMESPACE:
+    description: 'Kubernetes namespace'
+    required: true
+  ROOT_DIRECTORY:
+    description: 'Directory for Docker build'
+    required: true
+  PERSONAL_ACCESS_TOKEN:
+    description: 'Personal Access Token for GitHub Container Registry'
+    required: true
+  KUBE_CONFIG:
+    description: 'Kubernetes configuration file'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    # Build and Push Docker Image Steps
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Build & Push Docker image to GitHub Container Registry
+      uses: mr-smithers-excellent/docker-build-push@v6
+      with:
+        image: ${{ inputs.IMAGE_NAME }}
+        tags: latest, ${{ github.sha }}, ${{ inputs.IMAGE_TAG }}
+        registry: ghcr.io/${{ inputs.REPOSITORY }}
+        dockerfile: ${{ inputs.DOCKERFILE_PATH }}
+        username: ${{ inputs.USERNAME }}
+        password: ${{ inputs.PERSONAL_ACCESS_TOKEN }}
+        directory: '${{ inputs.ROOT_DIRECTORY }}'
+
+    # Deploy to Kubernetes Steps
+    - name: Set context from Kubeconfig
+      uses: azure/k8s-set-context@v1
+      with:
+        method: kubeconfig
+        kubeconfig: ${{ inputs.KUBE_CONFIG }}
+      id: setcontext
+
+    - name: Replace variables in Kubernetes Deployment file
+      shell: bash
+      run: |
+        sed -i "s|image: .*|image: ghcr.io/${{ inputs.REPOSITORY }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }}|g" ${{ inputs.DEPLOYMENTFILE_PATH }}
+
+    - name: Deploy to Kubernetes
+      uses: Azure/k8s-deploy@v4
+      with:
+        namespace: "${{ inputs.K8S_NAMESPACE }}"
+        action: deploy
+        strategy: basic
+        manifests: |
+          ${{ inputs.DEPLOYMENTFILE_PATH }}
+        images: |
+          ghcr.io/${{ inputs.REPOSITORY }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }}
+        imagepullsecrets: ${{ inputs.IMAGE_PULL_SECRETS }}
